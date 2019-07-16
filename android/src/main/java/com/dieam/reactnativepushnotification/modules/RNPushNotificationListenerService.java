@@ -7,10 +7,12 @@ import com.google.firebase.messaging.RemoteMessage;
 import android.app.ActivityManager;
 import android.app.ActivityManager.RunningAppProcessInfo;
 import android.app.Application;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.support.v4.content.LocalBroadcastManager;
 
 import com.dieam.reactnativepushnotification.helpers.ApplicationBadgeHelper;
 import com.facebook.react.ReactApplication;
@@ -26,6 +28,7 @@ import java.util.Random;
 import static com.dieam.reactnativepushnotification.modules.RNPushNotification.LOG_TAG;
 
 public class RNPushNotificationListenerService extends FirebaseMessagingService {
+    public static final String REMOTE_NOTIFICATION_EVENT = "notifications-remote-notification";
 
     @Override
     public void onMessageReceived(RemoteMessage message) {
@@ -50,6 +53,11 @@ public class RNPushNotificationListenerService extends FirebaseMessagingService 
             bundle.putString("message", bundle.getString("twi_body"));
         }
 
+        // Copy `com.urbanairship.push.ALERT` to `message` to support Airship
+        if (bundle.containsKey("com.urbanairship.push.ALERT")) {
+            bundle.putString("message", bundle.getString("com.urbanairship.push.ALERT"));
+        }
+
         if (data != null) {
             if (!bundle.containsKey("message")) {
                 bundle.putString("message", data.optString("alert", null));
@@ -71,33 +79,24 @@ public class RNPushNotificationListenerService extends FirebaseMessagingService 
         }
 
         Log.v(LOG_TAG, "onMessageReceived: " + bundle);
+        sendToNotificationCentre(bundle);
 
-        // We need to run this on the main thread, as the React code assumes that is true.
-        // Namely, DevServerHelper constructs a Handler() without a Looper, which triggers:
-        // "Can't create handler inside thread that has not called Looper.prepare()"
-        Handler handler = new Handler(Looper.getMainLooper());
-        handler.post(new Runnable() {
-            public void run() {
-                // Construct and load our normal React JS code bundle
-                ReactInstanceManager mReactInstanceManager = ((ReactApplication) getApplication()).getReactNativeHost().getReactInstanceManager();
-                ReactContext context = mReactInstanceManager.getCurrentReactContext();
-                // If it's constructed, send a notification
-                if (context != null) {
-                    handleRemotePushNotification((ReactApplicationContext) context, bundle);
-                } else {
-                    // Otherwise wait for construction, then send the notification
-                    mReactInstanceManager.addReactInstanceEventListener(new ReactInstanceManager.ReactInstanceEventListener() {
-                        public void onReactContextInitialized(ReactContext context) {
-                            handleRemotePushNotification((ReactApplicationContext) context, bundle);
-                        }
-                    });
-                    if (!mReactInstanceManager.hasStartedCreatingInitialContext()) {
-                        // Construct it in the background
-                        mReactInstanceManager.createReactContextInBackground();
-                    }
-                }
-            }
-        });
+        // Broadcast it to the (foreground) RN Application
+        Intent notificationEvent = new Intent(REMOTE_NOTIFICATION_EVENT);
+        notificationEvent.putExtra("notification", bundle);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(notificationEvent);
+    }
+
+    private void sendToNotificationCentre(Bundle bundle) {
+        // If notification ID is not provided by the user for push notification, generate one at random
+        if (bundle.getString("id") == null) {
+            Random randomNumberGenerator = new Random(System.currentTimeMillis());
+            bundle.putString("id", String.valueOf(randomNumberGenerator.nextInt()));
+        }
+
+        Application applicationContext = (Application)getApplicationContext();
+        RNPushNotificationHelper pushNotificationHelper = new RNPushNotificationHelper(applicationContext);
+        pushNotificationHelper.sendToNotificationCentre(bundle);
     }
 
     private JSONObject getPushData(String dataString) {
@@ -106,49 +105,5 @@ public class RNPushNotificationListenerService extends FirebaseMessagingService 
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private void handleRemotePushNotification(ReactApplicationContext context, Bundle bundle) {
-
-        // If notification ID is not provided by the user for push notification, generate one at random
-        if (bundle.getString("id") == null) {
-            Random randomNumberGenerator = new Random(System.currentTimeMillis());
-            bundle.putString("id", String.valueOf(randomNumberGenerator.nextInt()));
-        }
-
-        Boolean isForeground = isApplicationInForeground();
-
-        RNPushNotificationJsDelivery jsDelivery = new RNPushNotificationJsDelivery(context);
-        bundle.putBoolean("foreground", isForeground);
-        bundle.putBoolean("userInteraction", false);
-        jsDelivery.notifyNotification(bundle);
-
-        // If contentAvailable is set to true, then send out a remote fetch event
-        if (bundle.getString("contentAvailable", "false").equalsIgnoreCase("true")) {
-            jsDelivery.notifyRemoteFetch(bundle);
-        }
-
-        Log.v(LOG_TAG, "sendNotification: " + bundle);
-
-        Application applicationContext = (Application) context.getApplicationContext();
-        RNPushNotificationHelper pushNotificationHelper = new RNPushNotificationHelper(applicationContext);
-        pushNotificationHelper.sendToNotificationCentre(bundle);
-    }
-
-    private boolean isApplicationInForeground() {
-        ActivityManager activityManager = (ActivityManager) this.getSystemService(ACTIVITY_SERVICE);
-        List<RunningAppProcessInfo> processInfos = activityManager.getRunningAppProcesses();
-        if (processInfos != null) {
-            for (RunningAppProcessInfo processInfo : processInfos) {
-                if (processInfo.processName.equals(getApplication().getPackageName())) {
-                    if (processInfo.importance == RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
-                        for (String d : processInfo.pkgList) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
     }
 }
