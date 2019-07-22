@@ -10,7 +10,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
 import android.support.v4.app.NotificationManagerCompat;
-import android.support.v4.content.LocalBroadcastManager;
 
 import com.dieam.reactnativepushnotification.helpers.ApplicationBadgeHelper;
 import com.facebook.react.bridge.ActivityEventListener;
@@ -40,10 +39,12 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
     private RNPushNotificationHelper mRNPushNotificationHelper;
     private final Random mRandomNumberGenerator = new Random(System.currentTimeMillis());
     private RNPushNotificationJsDelivery mJsDelivery;
+    private final ReactApplicationContext mReactContext;
 
     public RNPushNotification(ReactApplicationContext reactContext) {
         super(reactContext);
 
+        mReactContext = reactContext;
         reactContext.addActivityEventListener(this);
 
         Application applicationContext = (Application) reactContext.getApplicationContext();
@@ -54,77 +55,6 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
         mJsDelivery = new RNPushNotificationJsDelivery(reactContext);
 
         registerNotificationsRegistration();
-
-        LocalBroadcastManager localBroadcastManager = LocalBroadcastManager.getInstance(reactContext);
-
-        // Subscribe to remote notification events
-        localBroadcastManager.registerReceiver(
-                new RemoteNotificationReceiver(),
-                new IntentFilter(RNPushNotificationListenerService.REMOTE_NOTIFICATION_EVENT)
-        );
-    }
-
-    private class RemoteNotificationReceiver extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (getReactApplicationContext().hasActiveCatalystInstance()) {
-                Bundle bundle = intent.getParcelableExtra("notification");
-
-                handleRemotePushNotification(
-                        getReactApplicationContext(),
-                        bundle
-                );
-            }
-        }
-
-        private void handleRemotePushNotification(ReactApplicationContext context, Bundle bundle) {
-            // If notification ID is not provided by the user for push notification, generate one at random
-            if (bundle.getString("id") == null) {
-                Random randomNumberGenerator = new Random(System.currentTimeMillis());
-                bundle.putString("id", String.valueOf(randomNumberGenerator.nextInt()));
-            }
-
-            boolean isForeground = isAppInForeground(context.getApplicationContext());
-
-            RNPushNotificationJsDelivery jsDelivery = new RNPushNotificationJsDelivery(context);
-            bundle.putBoolean("foreground", isForeground);
-            bundle.putBoolean("userInteraction", false);
-            jsDelivery.notifyNotification(bundle);
-
-            // If contentAvailable is set to true, then send out a remote fetch event
-            if (bundle.getString("contentAvailable", "false").equalsIgnoreCase("true")) {
-                jsDelivery.notifyRemoteFetch(bundle);
-            }
-        }
-
-        private boolean isAppInForeground(Context context) {
-            ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-            if (activityManager == null) return false;
-
-            List<ActivityManager.RunningAppProcessInfo> appProcesses = activityManager.getRunningAppProcesses();
-            if (appProcesses == null) return false;
-
-            final String packageName = context.getPackageName();
-            for (ActivityManager.RunningAppProcessInfo appProcess : appProcesses) {
-                if (
-                        appProcess.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
-                                && appProcess.processName.equals(packageName)
-                ) {
-                    ReactContext reactContext;
-
-                    try {
-                        reactContext = (ReactContext) context;
-                    } catch (ClassCastException exception) {
-                        // Not react context so default to true
-                        return true;
-                    }
-
-                    return reactContext.getLifecycleState() == LifecycleState.RESUMED;
-                }
-            }
-
-            return false;
-        }
     }
 
     @Override
@@ -148,12 +78,43 @@ public class RNPushNotification extends ReactContextBaseJavaModule implements Ac
         }
         return bundle;
     }
+
     public void onNewIntent(Intent intent) {
         Bundle bundle = this.getBundleFromIntent(intent);
         if (bundle != null) {
-            bundle.putBoolean("foreground", false);
+            boolean isForeground = isAppInForeground(mReactContext);
+            bundle.putBoolean("foreground", true);
             mJsDelivery.notifyNotification(bundle);
         }
+    }
+
+    private boolean isAppInForeground(Context context) {
+        ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        if (activityManager == null) return false;
+
+        List<ActivityManager.RunningAppProcessInfo> appProcesses = activityManager.getRunningAppProcesses();
+        if (appProcesses == null) return false;
+
+        final String packageName = context.getPackageName();
+        for (ActivityManager.RunningAppProcessInfo appProcess : appProcesses) {
+            if (
+                    appProcess.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                            && appProcess.processName.equals(packageName)
+            ) {
+                ReactContext reactContext;
+
+                try {
+                    reactContext = (ReactContext) context;
+                } catch (ClassCastException exception) {
+                    // Not react context so default to true
+                    return true;
+                }
+
+                return reactContext.getLifecycleState() == LifecycleState.RESUMED;
+            }
+        }
+
+        return false;
     }
 
     private void registerNotificationsRegistration() {
